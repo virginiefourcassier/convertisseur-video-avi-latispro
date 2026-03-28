@@ -1,4 +1,4 @@
-from flask import Flask, render_template_string, request, send_file
+from flask import Flask, render_template_string, request, send_file, url_for, redirect
 import subprocess
 import os
 import uuid
@@ -62,8 +62,8 @@ HTML_PAGE = """
     <div class="info">
       <strong>Formats acceptés :</strong> .mp4, .mov, .wmv, .avi, .mkv, .webm, etc.<br>
       <strong>Durée maximale :</strong> ~ 60 s (au-delà, la conversion peut échouer).<br>
-      <strong>Son :</strong> supprimé.<br>
-      <strong>Sortie :</strong> AVI MJPEG 25 ips, 640×480, compatible LatisPro.
+      <strong>Profil de sortie :</strong> AVI MJPEG (MJPG) 1280×720, 25 ips, audio PCM stéréo 48 kHz.<br>
+      <strong>Objectif :</strong> compatibilité maximale avec LatisPro pour le pointage.
     </div>
 
     <form method="post" enctype="multipart/form-data" onsubmit="onSubmitForm()">
@@ -77,10 +77,10 @@ HTML_PAGE = """
       <div class="error">{{ error }}</div>
     {% endif %}
 
-    {% if download_url %}
+    {% if download_id %}
       <div class="success">
         ✅ Conversion terminée.<br>
-        <a href="{{ download_url }}">⬇️ Télécharger le fichier AVI</a>
+        <a href="{{ url_for('download', file_id=download_id) }}">⬇️ Télécharger le fichier AVI</a>
       </div>
     {% endif %}
 
@@ -94,18 +94,34 @@ HTML_PAGE = """
 
 
 def convert_to_avi(input_path: str, output_path: str) -> bool:
-  # AVI très conservateur pour LatisPro : 640x480, MJPEG, 25 ips, sans son
+  """
+  Profil calé sur la vidéo qui fonctionne dans LatisPro :
+  - Vidéo : Motion JPEG (MJPG), 1280x720, 25 fps
+  - Audio : PCM (araw), stéréo, 48000 Hz, 16 bits
+  """
   cmd = [
       "ffmpeg",
       "-y",
-      "-i", input_path,
-      "-t", "60",                 # max 60 s
-      "-an",                      # pas de son
-      "-vcodec", "mjpeg",         # codec MJPEG
-      "-q:v", "3",                # qualité correcte
-      "-pix_fmt", "yuvj422p",     # format classique
-      "-r", "25",                 # 25 images/s
-      "-vf", "scale=640:480",     # résolution fixe 640x480
+      "-i",
+      input_path,
+      "-t",
+      "60",                # couper à 60 s max
+      # Vidéo
+      "-vcodec",
+      "mjpeg",             # Motion JPEG (MJPG)
+      "-q:v",
+      "3",                 # qualité correcte (~200 kb/s comme ton exemple)
+      "-r",
+      "25",                # 25 ips
+      "-vf",
+      "scale='min(1280,iw)':-1,scale=1280:720",  # max 1280 de large, puis forcer 1280x720
+      # Audio
+      "-acodec",
+      "pcm_s16le",         # PCM linéaire 16 bits (araw dans VLC)
+      "-ac",
+      "2",                 # stéréo
+      "-ar",
+      "48000",             # 48 kHz
       output_path,
   ]
   try:
@@ -119,15 +135,18 @@ def convert_to_avi(input_path: str, output_path: str) -> bool:
 @app.route("/", methods=["GET", "POST"])
 def index():
   error = None
-  download_url = None
+  download_id = None
 
   if request.method == "POST":
       file = request.files.get("video")
       if not file:
           error = "Aucun fichier reçu."
       else:
-          tmp_dir = os.path.join("tmp", str(uuid.uuid4()))
+          # dossier temporaire par conversion
+          tmp_id = str(uuid.uuid4())
+          tmp_dir = os.path.join("tmp", tmp_id)
           os.makedirs(tmp_dir, exist_ok=True)
+
           src_path = os.path.join(tmp_dir, "video_entree")
           file.save(src_path)
 
@@ -138,10 +157,32 @@ def index():
               error = "La conversion a échoué. Vérifiez que la vidéo dure moins de 60 s."
               shutil.rmtree(tmp_dir, ignore_errors=True)
           else:
-              # on envoie directement l'AVI puis le dossier sera supprimé plus tard par Render
-              return send_file(out_path, as_attachment=True, download_name="video_pour_latispro.avi")
+              # on redirige vers GET avec un identifiant de téléchargement
+              return redirect(url_for("index", file_id=tmp_id))
 
-  return render_template_string(HTML_PAGE, error=error, download_url=download_url)
+  # cas GET : on regarde si un fichier est prêt à être téléchargé
+  file_id = request.args.get("file_id")
+  if file_id:
+      tmp_dir = os.path.join("tmp", file_id)
+      out_path = os.path.join(tmp_dir, "video_pour_latispro.avi")
+      if os.path.exists(out_path):
+          download_id = file_id
+      else:
+          # si pour une raison quelconque le fichier n'existe plus
+          shutil.rmtree(tmp_dir, ignore_errors=True)
+
+  return render_template_string(HTML_PAGE, error=error, download_id=download_id)
+
+
+@app.route("/download/<file_id>")
+def download(file_id: str):
+  tmp_dir = os.path.join("tmp", file_id)
+  out_path = os.path.join(tmp_dir, "video_pour_latispro.avi")
+  if not os.path.exists(out_path):
+    return "Fichier introuvable ou déjà supprimé.", 404
+
+  # on renvoie le fichier puis on pourra nettoyer manuellement les dossiers tmp si besoin
+  return send_file(out_path, as_attachment=True, download_name="video_pour_latispro.avi")
 
 
 if __name__ == "__main__":
