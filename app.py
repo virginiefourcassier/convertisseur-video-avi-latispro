@@ -62,7 +62,7 @@ HTML_PAGE = """
     <div class="info">
       <strong>Formats acceptés :</strong> .mp4, .mov, .wmv, .avi, .mkv, .webm, etc.<br>
       <strong>Durée maximale :</strong> ~ 60 s (au-delà, la conversion peut échouer).<br>
-      <strong>Profil de sortie :</strong> AVI MJPEG (MJPG) 1280×720, 25 ips, audio PCM stéréo 48 kHz.<br>
+      <strong>Profil de sortie :</strong> AVI Microsoft Video 1 (CRAM), 640×480, 25 ips, sans audio.<br>
       <strong>Objectif :</strong> compatibilité maximale avec LatisPro pour le pointage.
     </div>
 
@@ -95,9 +95,9 @@ HTML_PAGE = """
 
 def convert_to_avi(input_path: str, output_path: str) -> bool:
   """
-  Profil calé sur la vidéo qui fonctionne dans LatisPro :
-  - Vidéo : Motion JPEG (MJPG), 1280x720, 25 fps
-  - Audio : PCM (araw), stéréo, 48000 Hz, 16 bits
+  Profil aligné sur la vidéo qui fonctionne dans LatisPro :
+  - Vidéo : Microsoft Video 1 (CRAM), 640x480, 25 fps
+  - Audio : supprimé (LatisPro n'en a pas besoin pour le pointage)
   """
   cmd = [
       "ffmpeg",
@@ -106,22 +106,14 @@ def convert_to_avi(input_path: str, output_path: str) -> bool:
       input_path,
       "-t",
       "60",                # couper à 60 s max
-      # Vidéo
+      "-an",               # pas de son
+      # Vidéo : Microsoft Video 1
       "-vcodec",
-      "mjpeg",             # Motion JPEG (MJPG)
-      "-q:v",
-      "3",                 # qualité correcte (~200 kb/s comme ton exemple)
+      "msvideo1",
       "-r",
       "25",                # 25 ips
       "-vf",
-      "scale='min(1280,iw)':-1,scale=1280:720",  # max 1280 de large, puis forcer 1280x720
-      # Audio
-      "-acodec",
-      "pcm_s16le",         # PCM linéaire 16 bits (araw dans VLC)
-      "-ac",
-      "2",                 # stéréo
-      "-ar",
-      "48000",             # 48 kHz
+      "scale=640:480",     # résolution fixe 640x480
       output_path,
   ]
   try:
@@ -142,7 +134,6 @@ def index():
       if not file:
           error = "Aucun fichier reçu."
       else:
-          # dossier temporaire par conversion
           tmp_id = str(uuid.uuid4())
           tmp_dir = os.path.join("tmp", tmp_id)
           os.makedirs(tmp_dir, exist_ok=True)
@@ -157,10 +148,8 @@ def index():
               error = "La conversion a échoué. Vérifiez que la vidéo dure moins de 60 s."
               shutil.rmtree(tmp_dir, ignore_errors=True)
           else:
-              # on redirige vers GET avec un identifiant de téléchargement
               return redirect(url_for("index", file_id=tmp_id))
 
-  # cas GET : on regarde si un fichier est prêt à être téléchargé
   file_id = request.args.get("file_id")
   if file_id:
       tmp_dir = os.path.join("tmp", file_id)
@@ -168,7 +157,6 @@ def index():
       if os.path.exists(out_path):
           download_id = file_id
       else:
-          # si pour une raison quelconque le fichier n'existe plus
           shutil.rmtree(tmp_dir, ignore_errors=True)
 
   return render_template_string(HTML_PAGE, error=error, download_id=download_id)
@@ -181,7 +169,6 @@ def download(file_id: str):
   if not os.path.exists(out_path):
     return "Fichier introuvable ou déjà supprimé.", 404
 
-  # on renvoie le fichier puis on pourra nettoyer manuellement les dossiers tmp si besoin
   return send_file(out_path, as_attachment=True, download_name="video_pour_latispro.avi")
 
 
